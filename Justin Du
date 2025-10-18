@@ -1,0 +1,63 @@
+# crime_single_postcode_io.py
+import sys
+import time
+import requests
+
+POSTCODES_IO = "https://api.postcodes.io"
+POLICE_API = "https://data.police.uk/api"
+
+def last_12_months():
+    """Fetch the last 12 available months from the Police API."""
+    r = requests.get(f"{POLICE_API}/crimes-street-dates", timeout=30)
+    r.raise_for_status()
+    months = sorted(row["date"] for row in r.json())
+    return months[-12:]
+
+def geocode_postcode(postcode: str):
+    """Postcode -> (lat, lng)."""
+    url = f"{POSTCODES_IO}/postcodes/{postcode.strip().upper()}"
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    j = r.json()
+    if j.get("status") != 200 or not j.get("result"):
+        raise ValueError(f"Postcode not found: {postcode}")
+    res = j["result"]
+    return float(res["latitude"]), float(res["longitude"])
+
+def count_crimes_last_year(postcode: str) -> int:
+    """Sum street-level crimes over the last 12 available months."""
+    lat, lng = geocode_postcode(postcode)
+    months = last_12_months()
+    total = 0
+    s = requests.Session()
+    for m in months:
+        params = {"lat": lat, "lng": lng, "date": m}
+        r = s.get(f"{POLICE_API}/crimes-street/all-crime", params=params, timeout=60)
+        if r.status_code == 429:  # backoff on rate limit
+            time.sleep(1.5)
+            r = s.get(f"{POLICE_API}/crimes-street/all-crime", params=params, timeout=60)
+        r.raise_for_status()
+        total += len(r.json())
+    return total
+
+def main():
+    # 1) Accept postcode from CLI arg, else prompt user
+    if len(sys.argv) > 1:
+        postcode = " ".join(sys.argv[1:]).strip()
+    else:
+        postcode = input("Enter a UK postcode (e.g., SW1A 1AA): ").strip()
+
+    if not postcode:
+        print("No postcode provided.")
+        sys.exit(1)
+
+    try:
+        total = count_crimes_last_year(postcode)
+        print(f"Total crimes near {postcode.upper()} in last 12 months: {total}")
+    except Exception as e:
+        # Keep it simple and clear for user-facing output
+        print(f"Error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
